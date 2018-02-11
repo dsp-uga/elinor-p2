@@ -1,0 +1,595 @@
+from pyspark.sql import SparkSession
+from operator import add
+import argparse
+import numpy as np
+import json
+import string
+
+BAY = "Bayes"
+LOG = "Logistic"
+RAF = "RandomForest"
+
+def swap(tup):
+    return (tup[1],tup[0])
+
+def NBFun6(accum,n):
+    ret = accum if accum[1]>n[1] else n
+    return ret
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description = "Project 1",
+        epilog = "CSCI 8360 Data Science Practicum: Spring 2018",
+        add_help = "How to use",
+        prog = "python p1.py -i <input_data_file> -l <input_labal_file> -o <output_directory> [optional args]")
+
+    #required arguments
+    parser.add_argument("-i", "--inputData", required = True,
+        help = "The path to find the input training data.")
+    parser.add_argument("-l", "--inputLabels", required = True,
+        help = "The path to find the input training labels.")
+    parser.add_argument("-o", "--output", required = True,
+        help = "The directory in which to place the output.")
+
+    #optional arguments
+    parser.add_argument("-y", "--testData",
+        help = "The path to find the input testing data.")
+    parser.add_argument("-z", "--testLabels",
+        help = "The path to find the input testing labels.")
+    parser.add_argument("-c", "--classifier", choices = ["Bayes","Logistic","RandomForest"], default = "Bayes",
+        help = "The type of classifier to use: Naive Bayes, Logistic Regression, or Random Forest")
+    parser.add_argument("-r", "--regularize", action = 'store_true', default = False,
+        help = "A flag for regularizing the feature space.")
+    parser.add_argument("-s", "--smooth", action = 'store_true', default = False,
+        help = "A flag for using a Laplace smoother on the input features.")
+    parser.add_argument("-t", "--stop",
+        help = "The directory in which to find the stopwords file (if using).")
+
+    args = vars(parser.parse_args())
+
+    DATA_PATH = args['inputData']
+    LABEL_PATH = args['inputLabels']
+    OUT_FILE  = args['output']
+
+    TEST_DATA_PATH  = args['testData']
+    TEST_LABEL_PATH = args['testLabels']
+    CLASSIFIER = args['classifier']
+    REGULARIZE = args['regularize']
+    SMOOTH     = args['smooth']
+    STOP_FILE  = args['stop']
+
+    spark = SparkSession\
+        .builder\
+        .appName("Project0")\
+        .getOrCreate()
+
+    sc = spark.sparkContext
+
+    sc = spark.sparkContext.getOrCreate()
+
+    X     = sc.textFile(DATA_PATH)
+    Xtest = sc.textFile(TEST_DATA_PATH)
+    y     = sc.textFile(LABEL_PATH)
+    ytest = sc.textFile(TEST_LABEL_PATH)
+
+    X.cache()
+    Xtest.cache()
+    y.cache()
+    ytest.cache()
+    
+    #PREPROCESS
+    if CLASSIFIER == BAY:
+        '''
+        First zip with Index and reverse the tuple to achieve document labeling,
+        then flat map the values to get each word from each document with its label,
+        then map the values to lower case, remove the tedious formated quotation marks
+        and strip any leading or trailing punctuation (not including apostrophes).
+        The final result is (did, wid) tuples
+        '''
+        X = X.zipWithIndex()\
+                 .map(lambda x: swap(x))\
+                 .flatMapValues(lambda x : x.split())\
+                 .mapValues(lambda x: x.lower().replace("&quot;","").strip(string.punctuation.replace("'","")))\
+                 .filter(lambda x: len(x[1])>1)
+        '''
+        Again, zip wth index and reverse the tuple to achieve document labeling,
+        flat map the values by splitting at the ",",
+        filter out any non "CAT" labels.
+        The final result is (did, lab) tuples
+        '''
+        Xtest = Xtest.zipWithIndex()\
+                         .map(lambda x : (x[1],x[0]))\
+                         .flatMapValues(lambda x : x.split())\
+                         .mapValues(lambda x: x.lower().replace("&quot;","").strip(string.punctuation.replace("'","")))\
+                         .distinct()
+
+        #We'll zip with indx and reverse. Then we need to separate out all of the separate labels.
+        y = y.zipWithIndex()\
+             .map(lambda x: (x[1],x[0]))\
+             .flatMapValues(lambda x: x.split(","))\
+             .filter(lambda x: not x[1].find("CAT")==-1)
+        #same process as above
+        ytest = ytest.zipWithIndex()\
+                     .map(lambda x: (x[1],x[0]))\
+                     .flatMapValues(lambda x: x.split(","))\
+                     .filter(lambda x: not x[1].find("CAT")==-1)
+    elif CLASSIFIER == LOG:
+
+        y = y.zipWithIndex()\
+             .map(lambda x: (x[1],x[0]))\
+             .flatMapValues(lambda x: x.split(","))\
+             .filter(lambda x: not x[1].find("CAT")==-1)
+        y.cache()
+
+        #We want to filter out any documents that don't have one of our labels off the bat
+        #   y  .keys()     => did NON-DISTINCT
+        #  ''  .distinct() => did DISTINCT
+        #  ''  .map(...)   => (did,1)    #  ** This is our "filter rdd" **
+
+        filterRDD = y.keys()\
+                     .distinct()\
+                     .map(lambda x: (x,1))
+
+
+        #  X   .zipWithIndex() => (doc,did)
+        #  ''  .map(...)       => (did,doc)
+        #  ''  .roj('')        => (did,(doc,1)) for did in other
+        #                                   OR
+        #                         (did,(None,1)) for did not in this
+        #  ''  .filter(...)    => (did,(doc,1)) i.e. gets rid of unimportant documents
+        #  ''  .mapValues(...) => (did,doc)
+        X = X.zipWithIndex()\
+                 .map(lambda x: swap(x))\
+                 .rightOuterJoin(filterRDD)\
+                 .filter(lambda x: not x[1][0]==None)\
+                 .mapValues(lambda x: x[0])
+
+        X.cache()
+        Xtest = Xtest.zipWithIndex()\
+                             .map(lambda x : (x[1],x[0]))\
+                             .flatMapValues(lambda x : x.split())\
+                             .mapValues(lambda x: x.lower().replace("&quot;","").strip(string.punctuation.replace("'","")))\
+                             .distinct()
+        Xtest.cache()
+        
+        #For multinomial logistic regression we have to create a duplicate document for duplicate labels
+        #  y   .keys()              => did values (not necessarilly unique)
+        #  ''  .map(...)            => (did,1)
+        #  ''  .reduceByKey(add)    => (did,count) the number of times each did appears in y
+        #  ''  .filter(...)         => (did,count) for all did which appear multiple times in y
+
+
+        repeats = y.keys()\
+                           .map(lambda x: (x,1))\
+                           .reduceByKey(add)\
+                           .filter(lambda x: x[1]>1)\
+                           .mapValues(lambda x: x-1)
+
+        #  X   .join(repeats)       => (did,(doc,count)) for each did which appears multiple times in y
+        #  ''  .flatMapValues(...)  => creates count-1 many copies of each (did,doc) pair in the above rdd
+        #  X   .union(XX)           => (did,doc) where did is NO LONGER UNIQUE
+        #  ''  .sort(...)           => (did,doc) in sorted order)
+        #  ''  .map(
+        XX = X.join(repeats)\
+              .flatMapValues(lambda x: [x[0]]*(x[1]))\
+
+        X  = X.union(XX)\
+              .sortByKey()\
+              .zipWithIndex()\
+              .map(lambda x: (x[1],x[0][1]))\
+              .flatMapValues(lambda x : x.split())\
+              .mapValues(lambda x: x.lower().replace("&quot;","").strip(string.punctuation.replace("'","")))\
+              .filter(lambda x: len(x[1])>1)
+        X.cache()
+
+        y = y.sortByKey()\
+                .zipWithIndex()\
+                .map(lambda x: (x[1],x[0][1]))
+        y.cache()
+        
+    if ( CLASSIFIER == BAY ):
+
+        #get the corpus vocabulary, the size of the vocabul, and the number of documents
+        V = X.values().distinct()
+        B = X.values().distinct().count()
+        N = X.keys().distinct().count()
+
+        #get the numer of documents of each label
+        Nc = y.map(lambda x: (x[1],1)).reduceByKey(add)
+
+
+        #get the estimated prior probabilities
+        priors = Nc.mapValues(lambda x: x/N)
+        priors.collect()
+
+        #XX gets the number of occurances of each word for each doc (not identifying non-occurences)
+        #  X   .map(...)         => ((wid,did),1) pairs for each (did,wid) pair in X
+        #  ''  .reduceByKey(add) => ((wid,did),count1), **NOTE : No 0s**
+        #  ''  .map(...)       => (did,(wid,count1)
+        #  ''  .join(y)        => (did,((wid,count1),lab)
+        #  ''  .mapValues(...) => (did,((lab,wid),count1)
+        #  ''  .values()       => ((lab,wid),count)
+        #  ''  .reduceByKey()  => ((lab,wid),count) where COUNT is the number of occurences of wid in lab type docs
+        #  ''  .mapValues(...) => ((lab,wid),count+1) because we need to add one for LaPlace Smoothing
+        VV = X.map(lambda x : (swap(x),1))\
+              .reduceByKey(add)\
+              .map(lambda x: (x[0][1],(x[0][0],x[1])))\
+              .join(y)\
+              .mapValues(lambda x: ((x[1],x[0][0]),x[0][1]))\
+              .map(lambda x: x[1])\
+              .reduceByKey(add)\
+              .mapValues(lambda x: x+1)
+
+        #We need to find out which words aren't in which docs
+        #   y  .values()        => (lab)
+        #  ''  .distinct()      => (lab)     unique labels
+        #  ''  .cartesian(V)    => (lab,wid) unique labels
+        #  ''  .subtract(...)   => (lab,wid) meaning wid never appeared in a lab type doc
+        #  ''  .map(...)        => ((lab,wid),1) a fake word for LaPlace smoothing
+        Missing = y.values()\
+                   .distinct()\
+                   .cartesian(V)\
+                   .subtract(VV.keys())\
+                   .map(lambda x: (x,1))
+
+        #Join the labels back into the
+        VV = VV.union(Missing)
+
+
+        #CBL gives us the total number of words in each class of document
+        #  VV  .map(...)       => (lab,count')
+        #  ''  .reduceByKey()  => (lab,COUNT)
+        countByLabel = VV.map(lambda x: (x[0][0],x[1]))\
+                         .reduceByKey(add)
+
+        #Tct is the conditional probabilities
+        #VV.map(...)            => (lab,(wid,COUNT))
+        #  ''  .join(CBL)       => (lab,((wid,COUNT),COUNT2))
+        #  ''  .map(...)        => ((lab,wid),(COUNT1,COUNT2))
+        #  ''  .mapValues(...)  => ((lab,wid),P(wid|lab))
+        Tct = VV.map(lambda x: (x[0][0],(x[0][1],x[1])))\
+                .join(countByLabel)\
+                .map(lambda x: ((x[0],x[1][0][0]),(x[1][0][1],x[1][1])))\
+                .mapValues(lambda x: (x[0])/(x[1]+B))
+
+        #This gets us the probability estimates P(lab = c | x) for each c
+        #Xtest.keys() => (did)      NOT unique
+        #  ''  .distinct() => (did)     UNIQUE
+        #  ''  .cartesian(...) => (did,lab) for each did and lab value
+        #  ''  .join(Xtest)    => (did,(lab,wid))
+        #  ''  .map(swap)      => ((lab,wid),did)
+        #  ''  .join(Tct)      => ((lab,wid),(did,P(wid|lab))
+        #  ''  .map(...)       => ((lab,did),P(wid|lab))
+        #  ''  .mapValues(...) => ((lab,did),log(P(wid|lab)))
+        #  ''  .reduceByKey(...) => ((lab,did),Sum_wid(log(P(wid|lab))))
+        #  ''  .map(...)         => (lab,(did,Sum_wid))
+        #  ''  .join(priors)     => ((lab,((did,Sum_wid),P(lab))))
+        #  ''  .map(...)         => (did,(lab,Sum_wid + P(lab)))
+        #  ''  .reduceByKey(NBFun6) => (did,lab) where lab has Max Sum_wid + P(lab) over all lab for this did
+        cross = Xtest.keys()\
+                     .distinct()\
+                     .cartesian(y.values().distinct())\
+                     .join(Xtest)\
+                     .map(swap)\
+                     .join(Tct)\
+                     .map(lambda x: ((x[0][0],x[1][0]),x[1][1]))\
+                     .mapValues(lambda x: np.log(x))\
+                     .reduceByKey(add)\
+                     .map(lambda x: (x[0][0],(x[0][1],x[1])))\
+                     .join(priors)\
+                     .map(lambda x: (x[1][0][0],(x[0],x[1][0][1]+x[1][1])))\
+                     .reduceByKey(NBFun6)
+
+        #counting our success...
+        cross = cross.map(lambda x: (x[0],x[1][0]))\
+                     .join(ytest)
+
+        print(cross.mapValues(lambda x: (1 if x[0]==x[1] else 0))\
+             .values()\
+             .reduce(add))
+
+    elif ( CLASSIFIER == LOG ):
+
+
+        CONVERGED = False
+        m = X.keys().count()
+        alpha = .1
+        epsilon = .001
+
+        #Get the word counts for each document
+        #   X  .map(...) => ((did,wid),1)
+        #  ''  .rbk(add) => ((did,wid),count)
+        #  ''  .map(...) => (did,wid,count)
+        counts = X.map(lambda x: (x,1))\
+                    .reduceByKey(add)\
+                    .map(lambda x: (x[0][0],x[0][1],x[1]))
+        counts.cache()
+        
+        #The size of the vocabulary
+        B = counts.map(lambda x: x[1])\
+                    .distinct()\
+                    .count()
+
+        #add the bias word on...
+        #  X   .keys()     => (wid) NOT UNIQUE
+        #  ''  .distinct() => (wid) UNIQUE
+        #  ''  .zwi()      => (wid,i)
+        #  ''  .map(...)   =>  (i,wid)
+        keys = X.keys()\
+                .distinct()\
+                .zipWithIndex()\
+                .map(lambda x: swap(x))
+
+
+        #create a biase word for each document
+        #  sc  .par      => (B,...,B) (m many B words)
+        #  ''  .zwi      => [(B,1),(B,2),...,(B,m)]
+        #  ''  .map(...) => [(1,B),(2,B),...,(m,B)]
+        biasWords = sc.parallelize(['B']*m)\
+                        .zipWithIndex()\
+                        .map(lambda x: swap(x))
+
+        #create a one count for each bias word
+        #  sc  .par      => [1,...,1] (m many ones)
+        #  ''  .zwi      => [(1,1),...,(1,m)]
+        #  ''  .map(...) => [(1,1),...,(m,1)]
+        ones = sc.parallelize(np.ones(m))\
+                    .zipWithIndex()\
+                    .map(lambda x: swap(x))
+        #Join the Bias words to the bias counts and to the documents, using the indices to join
+        #  keys  .join(...) => (i,(did,B))
+        #  ''    .join(...) => (i,((did,B),1))
+        #  ''    .values()  => ((did,B),1)
+        #  ''    .map(...)  => (did,B,1)
+        bias = keys.join(biasWords)\
+                        .join(ones)\
+                        .values()\
+                        .map(lambda x: (x[0][0],x[0][1],x[1]))
+
+        #add the bias words into the counts data
+        counts  = counts.union(bias)
+        counts.cache()
+        
+        ##### ***** REGULARIZE THE COUNTS ****####
+        #First get the mean value for each word
+        #  counts  .map(...)       => (wid,count)
+        #  ''      .rbk(...)       => (wid,sum_wid(count)))
+        #  ''      .mapValues(...) => (wid, mu_wid)
+        mean = counts.map(lambda x: (x[1],x[2]))\
+                     .reduceByKey(add)\
+                     .mapValues(lambda x: x/B)
+
+        #Now get the standard deviation for each word
+        #  counts  .map(...)    => (wid,count)
+        #  ''      .join(mean)  => (wid,(count,mu_wid))
+        #  ''      .mapValues() => (wid, (count-mu_wid)^2)
+        #  ''      .rbk()       => (wid, var_wid)
+        #  ''      .mapValues() => (wid, sd_wid)
+        sd   = counts.map(lambda x: (x[1],x[2]))\
+                     .join(mean)\
+                     .mapValues(lambda x: (x[0]-x[1])*(x[0]-x[1]))\
+                     .reduceByKey(add)\
+                     .mapValues(lambda x: np.sqrt(x))
+
+        #Join together for easier manipulation
+        #  mean  .join(sd) => (wid,(mu_wid,sd_wid))
+        regs = mean.join(sd)
+
+        #Now regularize the counts as count = (count-mu)/sd
+        #  counts  .map(...)   => (wid,(did,count))
+        #  ''      .join(regs) => (wid,((did,count),(mu_wid,sd_wid)))
+        #  ''      .map(...)   =>
+        counts = counts.map(lambda x: (x[1],(x[0],x[2])))\
+                        .join(regs)\
+                        .map(lambda x: (x[1][0][0],x[0],(x[1][0][1]-x[1][1][0])/x[1][1][1]))
+        counts.cache()
+        #we need the initial population for theta = (lab,wid,w_wid)
+        labs  = y.values().distinct()
+        words = X.values().distinct().union(sc.parallelize(['B']))
+        zeros = sc.parallelize([0.0])
+
+        #Building theta
+        #  labs  .cart(...) => (lab,wid) for each lab/wid pair
+        #  ''    .cart(...) => ((lab,wid),0) for each lab/wid pair
+        #  ''    .map(...)  => (lab,wid,w_wid) where w_wid is initialized to zero
+        theta = labs.cartesian(words)\
+                    .cartesian(zeros)\
+                    .map(lambda x: (x[0][0],x[0][1],x[1]))
+        theta.cache()
+        
+        #gradient decent
+        i=0
+        J = 0
+        while not CONVERGED :
+            print("i: ",i)
+            #Get the dot product of every document with every row in theta
+            #  theta  .map(...) => (wid,(lab,w_wid))
+            #  ''     .join(...) => (wid,((lab,w_wid),(did,count)))
+            #  ''     .map(...)  => ((did,lab),w_wid*count)
+            #  ''     .rbk(...)  => ((did,lab),x^(did)*DOT*theta^(lab))
+
+            dots = theta.map(lambda x: (x[1],(x[0],x[2])))\
+                        .join(counts.map(lambda x: (x[1],(x[0],x[2]))))\
+                        .map(lambda x: ((x[1][1][0],x[1][0][0]),(x[1][0][1]*x[1][1][1])))\
+                        .reduceByKey(add)
+            dots.cache()
+
+            #Now find the denominator for the predictions
+            #  dots  .map(...) => (did,x^(did)*DOT*theta^lab) for each row in theta
+            #  ''    .mapValues(...) => (did,exp(x^(did)*DOT*theta^lab))
+            #  ''    .rbk(add)       => (did,Sum_lab(x^(did)*DOT*theta^lab))
+            denom = dots.map(lambda x: (x[0][0],x[1]))\
+                        .mapValues(lambda x: np.exp(x))\
+                        .reduceByKey(add)
+
+            #Now make our predictions
+            #  dots  .map(...)  => (did,(lab,x^(did)*DOT*theta^lab)
+            #  ''    .join(...) => (did,((lab,x^(did)*DOT*theta^lab),denom))
+            #  ''    .map(...)  => ((did,lab),exp(x^(did)*DOT*theta^lab)/denom)
+            h = dots.map(lambda x: (x[0][0],(x[0][1],x[1])))\
+                    .join(denom)\
+                    .map(lambda x: ((x[0],x[1][0][0]),(np.exp(x[1][0][1])/x[1][1])))
+            h.cache()
+            
+            if False: #i%10 == 0 :
+                # Calculate the loss
+                # we need ((did,lab),1) pairs for each did and each lab
+                yc  = y.keys()\
+                        .distinct()\
+                        .cartesian(y.values().distinct())\
+                        .map(lambda x: (x,1))
+
+                # now we'll get ((did,lab),1) pairs for each (did,lab) in y
+                ycc = y.map(lambda x: (x,1))
+
+                # Now we'll use the two to calculate the loss
+                #  yc  .loj(ycc) =>  ((did,lab),(1,1)) when (did,lab) in ycc
+                #                                     OR
+                #                    ((did,lab),(1,None)) when (did,lab) not in ycc
+                #  ''  .mapValues(...) => ((did,lab),1{y^did=lab})
+                #  ''  .join(h...)     => ((did,lab),(1{y^did=lab},log(h(did,lab);theta)))
+                #  ''  .mapValues(...) => ((did,lab),(-1/m * 1{y^did=lab}*log(h(did,lab);theta)))
+                #  ''  .values()       => -1/m*1{y^did=lab}*log(h(did,lab);theta) FOR EACH did,lab combo
+                #  ''  .reduce(add)    => -1/m*sum_did[sum_lab[1{y^did=lab}*log(h(did,lab);theta)]]
+                J =  yc.leftOuterJoin(ycc)\
+                        .mapValues(lambda x: 1 if x[1]==1 else 0)\
+                        .join(h.mapValues(lambda x: np.log(x)))\
+                        .mapValues(lambda x: x[0]*x[1]*-1/m)\
+                        .values()\
+                        .reduce(add)
+                print("Cost:",J)
+            i+=1
+            #Now calculate the gradient
+            #  y   .map(...)       => ((did,lab),1)
+            #  h   .loj(yy)        => ((did,lab),(pred,1)) for (did,lab) in yy
+            #                                    OR
+            #                         ((did,lab),(pred,None)) for (did,lab) not in yy
+            #  ''  .mapValues(...) => ((did,lab),1{y^did=lab}-pred) **NOTE: We'll refer to
+            #                                                          1{y^did=lab}-pred
+            #                                                         as expr from now on**
+            #  ''  .map(...)       => (did,(lab,expr))
+            #  ''  .join(counts)   => (did,((lab,expr),(wid,count)))
+            #  ''  .map(...)       => ((lab,wid),expr*count)
+            #  ''  .rbk(add)       => ((lab,wid),sum_did(expr*count))
+            #  ''  .mapValues(...) => ((lab,wid),-1/m * sum_did(expr*count))
+            yy = y.map(lambda x: (x,1))
+
+            grad = h.leftOuterJoin(yy)\
+                    .mapValues(lambda x: 1-x[0] if x[1]==1 else 0-x[0])\
+                    .map(lambda x: (x[0][0],(x[0][1],x[1])))\
+                    .join(counts.map(lambda x: (x[0],(x[1],x[2]))))\
+                    .map(lambda x: ((x[1][0][0],x[1][1][0]),x[1][0][1]*x[1][1][1]))\
+                    .reduceByKey(add)\
+                    .mapValues(lambda x: -1/m * x )
+            grad.cache()
+            
+            #find the new theta value
+            # theta  .map(...)     => ((lab,wid),oldW)
+            #  ''    .join(grad)   => ((lab,wid),(oldW,gradW))
+            #  ''     .mapValues() => ((lab,wid),new_weight)
+            thetaNew = theta.map(lambda x: ((x[0],x[1]),x[2]) )\
+                            .join(grad)\
+                            .mapValues(lambda x: x[0]-alpha*x[1])\
+                            .map(lambda x: (x[0][0],x[0][1],x[1]))
+
+            theta = thetaNew
+            theta.cache()
+            ##see if we need to stop updating anything...
+            ##  theta  .map(...)  => ((lab,wid),w_wid)
+            ##  ''     .join(...) => ((lab,wid),(w_wid,new_weight))
+            #thetas = theta.map(lambda x: ((x[0],x[1]),x[2]))\
+            #            .join(thetaNew)
+            #print("thetas:",thetas.collect())
+            ## Now we'll find the euclidean distance from the old weight vector
+            ## to the new weight vector for each label
+            ##  ''     .mapValues(...) => ((lab,wid),(w_wid - new_weight)^2)
+            ##                                          **NOTE: we'll refer to
+            ##                                           (w_wid - new_weight)^2
+            ##                                          as diff_sqd from here on**
+            ## ''     .map(...)       => (lab,diff_sqd)
+            ##  ''     .rbk(add)       => (lab,ssd)
+            ##  ''     .mapValues(...) => (lab,dist_euclid)
+            #dist = thetas .mapValues(lambda x: (x[0]-x[1])**2)\
+            #            .map(lambda x: (x[0][0],x[1]))\
+            #            .reduceByKey(add)\
+            #            .mapValues(lambda x: np.sqrt(x))
+            ##If each of the labels has converged according to epsilon, we'll call it a day
+            ##Otherwise we'll change the theta values that need to be changed
+            ##  thetas  .map(...) => (lab,(wid,(w_wid,new_weight)))
+            ##  ''      .join(dist) => (lab,((wid,(w_wid,new_weight)),dist))
+            ##  ''      .map(...)   => (lab,wid,w_wid) if dist<=epsilon
+            ##                                        OR
+            ##  ''                     (lab,wid,new_weight) if dist>epsilon
+            #print("dist:",dist.values().collect())
+            #if dist.values().map(lambda x: 1 if x>epsilon else 0).reduce(add) == 0 : CONVERGED = True
+            #else :
+            #     theta = thetas.map(lambda x: (x[0][0],(x[0][1],x[1])))\
+            #                    .join(dist)\
+            #                    .map(lambda x: (x[0],x[1][0][0],x[1][0][1][0])\
+            #                         if x[1][1] <= epsilon\
+            #                         else (x[0],x[1][0][0],x[1][0][1][1]) )
+
+            if i == 200 : CONVERTED = True
+        #Recreate the counts map out of the Xtest instead of the X data
+        counts = Xtest.map(lambda x: (x,1))\
+                      .reduceByKey(add)\
+                      .map(lambda x: (x[0][0],x[0][1],x[1]))
+
+        #add the bias word on...
+        #  X   .keys()     => (wid) NOT UNIQUE
+        #  ''  .distinct() => (wid) UNIQUE
+        #  ''  .zwi()      => (wid,i)
+        #  ''  .map(...)   =>  (i,wid)
+        keys = Xtest.keys()\
+                    .distinct()\
+                    .zipWithIndex()\
+                    .map(lambda x: swap(x))
+
+        #Join the Bias words to the bias counts and to the documents, using the indices to join
+        #  keys  .join(...) => (i,(did,B))
+        #  ''    .join(...) => (i,((did,B),1))
+        #  ''    .values()  => ((did,B),1)
+        #  ''    .map(...)  => (did,B,1)
+        bias = keys.join(biasWords)\
+                        .join(ones)\
+                        .values()\
+                        .map(lambda x: (x[0][0],x[0][1],x[1]))
+
+        #add the bias words into the counts data
+        counts  = counts.union(bias)
+
+        #Get the dot product of every document with every row in theta
+        #  theta  .map(...) => (wid,(lab,w_wid))
+        #  ''     .join(...) => (wid,((lab,w_wid),(did,count)))
+        #  ''     .map(...)  => ((did,lab),w_wid*count)
+        #  ''     .rbk(...)  => ((did,lab),x^(did)*DOT*theta^(lab))
+        dots = theta.map(lambda x: (x[1],(x[0],x[2])))\
+                    .join(counts.map(lambda x: (x[1],(x[0],x[2]))))\
+                    .map(lambda x: ((x[1][1][0],x[1][0][0]),(x[1][0][1]*x[1][1][1])))\
+                    .reduceByKey(add)
+
+        #Now find the denominator for the predictions
+        #  dots  .map(...) => (did,x^(did)*DOT*theta^lab) for each row in theta
+        #  ''    .mapValues(...) => (did,exp(x^(did)*DOT*theta^lab))
+        #  ''    .rbk(add)       => (did,Sum_lab(x^(did)*DOT*theta^lab))
+        denom = dots.map(lambda x: (x[0][0],x[1]))\
+                    .mapValues(lambda x: np.exp(x))\
+                    .reduceByKey(add)
+
+        #Now make our predictions
+        #  dots  .map(...)  => (did,(lab,x^(did)*DOT*theta^lab)
+        #  ''    .join(...) => (did,((lab,x^(did)*DOT*theta^lab),denom))
+        #  ''    .map(...)  => ((did,lab),exp(x^(did)*DOT*theta^lab)/denom)
+        h = dots.map(lambda x: (x[0][0],(x[0][1],x[1])))\
+                .join(denom)\
+                .map(lambda x: (x[0],(x[1][0][0],np.exp(x[1][0][1])/x[1][1])))\
+                .reduceByKey(NBFun6)
+        print("preds:",h.collect())
+    elif ( CLASSIFIER == RAF ):
+        #TODO : Implement Random Forest Classifier
+        print(RAF)
+        X = X.zipWithIndex()\
+                 .map(lambda x: swap(x))\
+                 .flatMapValues(lambda x : x.split())\
+                 .mapValues(lambda x: x.lower().replace("&quot;","").strip(string.punctuation.replace("'","")))\
+                 .filter(lambda x: len(x[1])>1)
+        print(X.values().distinct().count())
