@@ -104,3 +104,6 @@ ENV/
 \#*
 .\#*
 *metastore_db*
+
+*data/
+*Untitled*
