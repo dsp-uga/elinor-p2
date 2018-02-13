@@ -9,7 +9,7 @@ from operator import add
 import numpy as np
 import string
 
-from pyspark.mllib.tree import RandomForest
+from pyspark.mllib.tree import RandomForest, GradientBoostedTrees
 from pyspark.mllib.regression import LabeledPoint
 from pyspark.mllib.evaluation import MulticlassMetrics
 
@@ -39,7 +39,8 @@ test_data = test_data.drop('did') \
 # print("num_train: {}, num_test: {}".format(train_data.count(), test_data.count()))
 # print("---"*50)
 
-model = RandomForest.trainClassifier(train_data, 10, {}, 10)
+# model = RandomForest.trainClassifier(train_data, 10, {}, 10)
+model = GradientBoostedTrees.trainClassifier(train_data, {})
 
 predictions = model.predict(test_data).zipWithIndex().map(lambda row: (row[1], row[0]))
 
