@@ -20,7 +20,7 @@ from pyspark.ml.feature import ChiSqSelector
 from pyspark.ml.classification import RandomForestClassifier
 
 
-rom pyspark.ml.feature import NGram
+from pyspark.ml.feature import NGram
 from pyspark.sql.functions import col,udf, withColumn
 from pyspark.sql import SQLContext,Row
 from operator import add
@@ -31,6 +31,10 @@ from pyspark.ml.feature import StringIndexer
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import IndexToString, StringIndexer, VectorIndexer, VectorAssembler
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+import pyspark.sql.functions
+from pyspark.ml.linalg import Vectors, VectorUDT
+
 
 conf = SparkConf().setAppName("MalwareClassification")
 conf = (conf.setMaster('local[*]')
@@ -95,25 +99,77 @@ toker = Tokenizer(inputCol = "doc",outputCol = "words")
 train_data = toker.transform(train_data)
 test_data = toker.transform(test_data)
 
+train_data.show(10)
+test_data.show(10)
+
 # *---------- Define 2Grammer & get train/test documents' 2grams -------------*
 grammer = NGram(n=2,inputCol="words",outputCol="grams")
 train_data = grammer.transform(train_data)
 train_data = grammer.transform(train_data)
 
+train_data.show(10)
+test_data.show(10)
 # *------------------ Get length of the bytes documents ----------------------*
-train_data train_data.withColumn("length", length("doc"))
-test_data test_data.withColumn("length", length("doc"))
+train_data train_data.withColumn("length", length("doc")) \
+                        .drop("doc")
+test_data test_data.withColumn("length", length("doc")) \
+                        .drop("doc")
 
-# *--------------------
+train_data.show(10)
+test_data.show(10)
+# *--------------------------- Combine 1&2 grams -----------------------------*
+train_data = train_data.rdd \
+                        .map(lambda x: Row(x['did'],x['words']+x['grams'])) \
+                        .toDF(['did','gram_feat'])
 
-# *------------------ Get Counts of 1&2-grams ----------------------*
+test_data = test_data.rdd \
+                        .map(lambda x: Row(x['did'],x['words']+x['grams'])) \
+                        .toDF(['did','gram_feat'])
 
-countVec = CountVectorizer()
+train_data.show(10)
+test_data.show(10)
+# *----------------------- Get Counts of 1&2-grams ---------------------------*
+countVec = CountVectorizer(inputCol="gram_feat", outputCol = "gram_counts")
+train_data = cv.fit(train_data) \
+                .transform(train_data) \
+                .drop("gram_feat")
+test_data = cv.fit(test_data) \
+                .transform(test_data) \
+                .drop("gram_feat")
+
+train_data.show(10)
+test_data.show(10)
+
+# *-------------------- Convert to dense Vector ------------------------------*
+train_data = train_data.withColumn("gram_vec", train_data.gram_feat[2]) \
+                    .drop("gram_feat")
+test_data = test_data.withColumn("gram_vec", test.data.gram_feat[2]) \
+                    .drop("gram_feat")
+
+train_data.show(10)
+test_data.show(10)
+
+# *--------------------- Combine with length ---------------------------------*
+# This part was sourced from this Stack Overflow question:
+# https://stackoverflow.com/questions/46556606/adding-a-value-into-a-densevector-in-pyspark
+concat = functions.udf(lambda v, e: Vectors.dense(v + [e]), VectorUDT()) # user defined function to tack doc length to ngram counts
+train_data = train_data.select(concat(train_data.gram_vec, train_data.length).alias('features'))
+test_data = test_data.select(concat(test_data.gram_vec, test_data.length).alias('features'))
 
 
+# *------------------- Add labels column and drop doc id ---------------------*
+train_data = train_data.join(train_labels,['did']) \
+                        .drop('did')
+test_data = test_data.join(test_labels,['did']) \
+                        .drop('did')
 
-
-
-rf = RandomForestClassifier(numTrees=20, maxDepth=10, labelCol="label",featuresCol="features", seed=42, predictionCol='predictions')
+# *---------------------- RandomForest Classifier ----------------------------*
+rf = RandomForestClassifier(numTrees=20, maxDepth=10, labelCol="label",featuresCol="features", seed=42, predictionCol='prediction')
 model = rf.fit(train_data)
-predictions = model.transform(test_data)
+model.save("gs://elinor_temp/models")
+test_data = model.transform(test_data)
+
+multi_eval = MulticlassClassificationEvaluator(predictionCol="prediction", labelCol="label", metricName='accuracy')
+test_accuracy = multi_eval.evaluate(test_data)
+print("TEST ACCURACY = {}".format(test_accuracy))
+predict_col = predictions
