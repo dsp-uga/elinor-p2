@@ -45,13 +45,13 @@ sqlc = SQLContext(sc)
 # path = 'gs://elinor-p2/train_features'
 # *----------------------------- Set paths -----------------------------------*
 train_path = "gs://uga-dsp/project2/files/X_small_train.txt"
-test_path = "gs://uga-dsp/project2/files/X_small_test.txt"
+# test_path = "gs://uga-dsp/project2/files/X_small_test.txt"
 train_labels_path = "gs://uga-dsp/project2/files/y_small_train.txt"
-test_labels_path = "gs://uga-dsp/project2/files/y_small_test.txt"
+# test_labels_path = "gs://uga-dsp/project2/files/y_small_test.txt"
 
 # *----------------------------- Get files -----------------------------------*
 hashFiles_train = sc.textFile(train_path)
-hashFiles_test = sc.textFile(test_path)
+# hashFiles_test = sc.textFile(test_path)
 
 
 # *------------------------ Get labels dataframes ----------------------------*
@@ -67,7 +67,7 @@ train_labels = sc.textFile(train_labels_path) \
 
 # *---------------------------- Get bytes files ------------------------------*
 bytesFiles_train = hashFiles_train.map(lambda x: "gs://uga-dsp/project2/data/bytes/"+ x+".bytes")
-bytesFiles_test = hashFiles_test.map(lambda x: "gs://uga-dsp/project2/data/bytes/"+ x+".bytes")
+# bytesFiles_test = hashFiles_test.map(lambda x: "gs://uga-dsp/project2/data/bytes/"+ x+".bytes")
 
 # *-------------------- Define accumulator function --------------------------*
 def fun(accum,x):
@@ -75,7 +75,7 @@ def fun(accum,x):
 
 # *------------------ Define train and test bytes files ----------------------*
 bytesFileString_train = bytesFiles_train.reduce(fun)
-bytesFileString_test = bytesFiles_test.reduce(fun)
+# bytesFileString_test = bytesFiles_test.reduce(fun)
 
 
 # *--------------- Read train/test bytes files to dataframes -----------------*
@@ -85,101 +85,65 @@ train_data = sc.wholeTextFiles(bytesFileString_train)\
                 .zipWithIndex() \
                 .map(lambda x: (x[1],x[0])) \
                 .toDF(['did', 'words'])
-test_data = sc.wholeTextFiles(bytesFileString_test)\
-                .map(lambda x: x[1].split()) \
-                .map(lambda x: [word for word in x if len(word)<3]) \
-                .zipWithIndex() \
-                .map(lambda x: (x[1],x[0])) \
-                .toDF(['did', 'words'])
+# test_data = sc.wholeTextFiles(bytesFileString_test)\
+#                 .map(lambda x: x[1].split()) \
+#                 .map(lambda x: [word for word in x if len(word)<3]) \
+#                 .zipWithIndex() \
+#                 .map(lambda x: (x[1],x[0])) \
+#                 .toDF(['did', 'words'])
 
 train_data.show(10)
-test_data.show(10)
-
-# *---------- Define 2Grammer & get train/test documents' 2grams -------------*
-grammer = NGram(n=2,inputCol="words",outputCol="grams", )
-train_data = grammer.transform(train_data)
-test_data = grammer.transform(test_data)
-
-train_data.show(10)
-test_data.show(10)
-
-# *------------------ Get length of the bytes documents ----------------------*
-# train_data = train_data.withColumn("length", length("doc")) \
-#                         .drop("doc")
-# test_data = test_data.withColumn("length", length("doc")) \
-#                         .drop("doc")
-#
-# train_data.show(10)
 # test_data.show(10)
-# *--------------------------- Combine 1&2 grams -----------------------------*
-train_data = train_data.rdd \
-                        .map(lambda x: Row(x['did'],x['words']+x['grams'])) \
-                        .toDF(['did','gram_feat'])
 
-test_data = test_data.rdd \
-                        .map(lambda x: Row(x['did'],x['words']+x['grams'])) \
-                        .toDF(['did','gram_feat'])
 
-train_data.show(10)
-test_data.show(10)
+
 # *----------------------- Get Counts of 1&2-grams ---------------------------*
-cv = CountVectorizer(inputCol="gram_feat", outputCol = "gram_counts", vocabSize=1000)
+cv = CountVectorizer(inputCol="words", outputCol = "word_counts")
 train_data = cv.fit(train_data) \
                 .transform(train_data) \
-                .drop("gram_feat")
-test_data = cv.transform(test_data) \
-                .drop("gram_feat")
-
-cv.save("gs://elinor_temp/models/CountVectorizer")
+                .drop("words")
+# test_data = cv.fit(test_data) \
+#                 .transform(test_data) \
+#                 .drop("words")
 
 train_data.show(10)
-test_data.show(10)
+# test_data.show(10)
 
 # *-------------------- Convert to dense Vector ------------------------------*
-train_data = train_data.withColumn("features", train_data.gram_counts[2])
-test_data = test_data.withColumn("features", test.data.gram_counts[2])
+train_data = train_data.withColumn("word_vec", train_data.word_counts[2]) \
+                    .drop("word_counts")
+# test_data = test_data.withColumn("word_vec", test_data.word_counts[2]) \
+#                     .drop("word_counts")
 
 train_data.show(10)
-test_data.show(10)
-
-# *--------------------- Combine with length ---------------------------------*
-# This part was sourced from this Stack Overflow question:
-# https://stackoverflow.com/questions/46556606/adding-a-value-into-a-densevector-in-pyspark
-# concat = functions.udf(lambda v, e: Vectors.dense(v + [e]), VectorUDT()) # user defined function to tack doc length to ngram counts
-# train_data = train_data.select(concat(train_data.gram_vec, train_data.length).alias('features'))
-# test_data = test_data.select(concat(test_data.gram_vec, test_data.length).alias('features'))
+# test_data.show(10)
 
 
 # *------------------- Add labels column and drop doc id ---------------------*
 train_data = train_data.join(train_labels,['did']) \
                         .drop('did')
-test_data = test_data.join(test_labels,['did']) \
-                        .drop('did')
+# test_data = test_data.join(test_labels,['did']) \
+#                         .drop('did')
 
 # *---------------------- RandomForest Classifier ----------------------------*
-rf = RandomForestClassifier(numTrees=10,
-                            maxDepth=8,
+rf = RandomForestClassifier(numTrees=20,
+                            maxDepth=10,
                             labelCol="label",
                             featuresCol="features",
                             seed=42,
                             predictionCol='prediction',
                             checkPointInterval=10)
 model = rf.fit(train_data)
-model.save("gs://elinor_temp/models/RandomForestClassifier")
+model.save("gs://elinor_temp/models")
 test_data = model.transform(test_data)
 predictions = test_data.select("prediction").rdd.collect()
 with open("gs://elinor_temp/output/predictions.txt", 'w+') as f:
     for i in predictions:
         f.write(i)
-print(rf.toDebugString)
-print("featureImportances: {}".format(rf.featureImportances))
-
 # *---------------- Evaluate (Get test/validation accuracy) ------------------*
 
 multi_eval = MulticlassClassificationEvaluator(predictionCol="prediction",
                                                 labelCol="label",
                                                 metricName='accuracy')
 test_accuracy = multi_eval.evaluate(test_data)
-print('*'*300)
 print("TEST ACCURACY = {}".format(test_accuracy))
-print('*'*300)
