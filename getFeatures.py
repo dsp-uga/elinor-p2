@@ -1,92 +1,130 @@
 import pyspark
 from operator import add
-from pyspark import SparkConf
-from pyspark.ml.feature import NGram
+from pyspark import SparkConf,SparkContext
+from pyspark.ml.feature import NGram, CountVectorizer
 from pyspark.sql.functions import col,udf
 from pyspark.sql import SQLContext, Row
-from pyspark.mllib.linalg.distributed import CoordinateMatrix, MatrixEntry
 import re
 
-sc = pyspark.SparkContext(appName="DocClassification")
+sc = pyspark.SparkContext(appName="malwareClassification")
 sqlc = SQLContext(sc)
 
-hashFiles = sc.textFile("gs://uga-dsp/project2/files/X_small_train.txt")
-asmFiles = hashFiles.map(lambda x: "gs://uga-dsp/project2/data/asm/"+ x+".asm")
+def saveData(trainData, path):
+    trainData.write.parquet(path)
 
-labels = sc.textFile("gs://uga-dsp/project2/files/y_small_train.txt")
+def train(opcodes,labels,hashFiles,sc,sqlc,path):
 
-def fun(accum,x):
-    return accum+','+x
-asmFileString = asmFiles.reduce(fun)
+    asmFiles = hashFiles.map(lambda x: "gs://uga-dsp/project2/data/asm/"+ x+".asm")
+
+    def fun(accum,x):
+        return accum+','+x
+
+    asmFileString = asmFiles.reduce(fun)
+    rdd1= sc.wholeTextFiles(asmFileString,20)
+
+    opcodesInDoc = rdd1.map(lambda x: x[1].split()).map(lambda x: [word for word in x if word in opcodes.value]).zipWithIndex().map(lambda x: (x[1],x[0]))
+
+    ngramFrame = sqlc.createDataFrame(opcodesInDoc,["docId","opcodes"])
+
+    twoGram = NGram(n=2, inputCol="opcodes", outputCol="2grams")
+    ngramFrame = twoGram.transform(ngramFrame)
+
+    threeGram = NGram(n=3, inputCol="opcodes", outputCol="3grams")
+    ngramFrame= threeGram.transform(ngramFrame)
+
+    fourGram = NGram(n=4, inputCol="opcodes", outputCol="4grams")
+    ngramFrame = fourGram.transform(ngramFrame)
+
+    def getSegment(x):
+        templist=[]
+        for line in x:
+            l= re.findall(r'\w+:?(?=:)',line)
+            templist.append(l[0])
+        return templist
+
+    segments = rdd1.zipWithIndex().map(lambda x: (x[1],x[0][1].splitlines())).map(lambda x: (x[0],getSegment(x[1]))).toDF(["docId","segments"])
+
+    featureFrame= ngramFrame.join(segments, "docId")
+
+    featuresDF = featureFrame.rdd.map(lambda x: Row(did=x['docId'],docFeatures=x['opcodes']+x['2grams']+x['3grams']+x['4grams']+x['segments'])).toDF()
+
+    cv = CountVectorizer(inputCol="docFeatures", outputCol="features")
+
+    featureFitModel = cv.fit(featuresDF)
+
+    featuresCV = featureFitModel.transform(featuresDF)
+
+    #labelRdd = labels.zipWithIndex().map(lambda x: (x[1],x[0]))
+
+    #labelFrame = labelRdd.toDF(["did","label"])
+
+    trainData = featuresCV.join(labelFrame,"did").drop('did','docFeatures')
+    saveData(trainData,path)
+
+    return featureFitModel
 
 
-rdd1= sc.wholeTextFiles(asmFileString,20)
+def test(opcodes,hashFiles,sc,sqlc,path,featureFitModel):
+
+    asmFiles = hashFiles.map(lambda x: "gs://uga-dsp/project2/data/asm/"+ x+".asm")
+
+    def fun(accum,x):
+        return accum+','+x
+
+    asmFileString = asmFiles.reduce(fun)
+
+    rdd1= sc.wholeTextFiles(asmFileString,20)
+
+    opcodesInDoc = rdd1.map(lambda x: x[1].split()).map(lambda x: [word for word in x if word in opcodes.value]).zipWithIndex().map(lambda x: (x[1],x[0]))
+
+    ngramFrame = sqlc.createDataFrame(opcodesInDoc,["docId","opcodes"])
+
+    twoGram = NGram(n=2, inputCol="opcodes", outputCol="2grams")
+    ngramFrame = twoGram.transform(ngramFrame)
+
+    threeGram = NGram(n=3, inputCol="opcodes", outputCol="3grams")
+    ngramFrame= threeGram.transform(ngramFrame)
+
+    fourGram = NGram(n=4, inputCol="opcodes", outputCol="4grams")
+    ngramFrame = fourGram.transform(ngramFrame)
+
+    def getSegment(x):
+        templist=[]
+        for line in x:
+            l= re.findall(r'\w+:?(?=:)',line)
+            templist.append(l[0])
+        return templist
+
+    segments = rdd1.zipWithIndex().map(lambda x: (x[1],x[0][1].splitlines())).map(lambda x: (x[0],getSegment(x[1]))).toDF(["docId","segments"])
+
+    featureFrame= ngramFrame.join(segments, "docId")
+
+    featuresDF = featureFrame.rdd.map(lambda x: Row(did=x['docId'],docFeatures=x['opcodes']+x['2grams']+x['3grams']+x['4grams']+x['segments'])).toDF()
+
+    cv = CountVectorizer(inputCol="docFeatures", outputCol="features")
+
+    featuresCV = featureFitModel.transform(featuresDF)
+
+    testData = featuresCV.drop('did','docFeatures')
+    saveData(testData,path)
+
 
 OpcodesList = sc.textFile("gs://elinor-p2/allOpcodes.txt")
-opcodes= sc.broadcast(OpcodesList.collect())
+
+opcodeSet = set(OpcodesList.collect())
+
+opcodes= sc.broadcast(opcodeSet)
+
+#train data
+hashFiles = sc.textFile("gs://uga-dsp/project2/files/X_train.txt")
+labels = sc.textFile("gs://uga-dsp/project2/files/y_train.txt")
+hashFiles2 = sc.textFile("gs://uga-dsp/project2/files/X_test.txt")
+
+featureFitModel = train(opcodes,labels,hashFiles,sc,sqlc,"gs://elinor-p2/large_train_features")
+
+#test Data
 
 
-opcodesInDoc = rdd1.map(lambda x: x[1].split()).map(lambda x: [word for word in x if word in opcodes.value]).zipWithIndex().map(lambda x: (x[1],x[0]))
+test(opcodes,hashFiles2,sc,sqlc,"gs://elinor-p2/large_test_features",featureFitModel)
 
 
-ngramFrame = sqlc.createDataFrame(opcodesInDoc,["docId","opcodes"])
-
-
-twoGram = NGram(n=2, inputCol="opcodes", outputCol="2grams")
-ngramFrame = twoGram.transform(ngramFrame)
-
-
-threeGram = NGram(n=3, inputCol="opcodes", outputCol="3grams")
-ngramFrame= threeGram.transform(ngramFrame)
-
-
-fourGram = NGram(n=4, inputCol="opcodes", outputCol="4grams")
-ngramFrame = fourGram.transform(ngramFrame)
-
-
-twoGramRdd = ngramFrame.select("docId","2grams").rdd.map(tuple)
-threeGramRdd =ngramFrame.select("docId","3grams").rdd.map(tuple)
-fourGramRdd =ngramFrame.select("docId","4grams").rdd.map(tuple)
-
-oneGramCounts = opcodesInDoc.flatMapValues(lambda x: x).map(lambda x: (x,1)).reduceByKey(add)
-
-
-twoGramCounts = twoGramRdd.flatMapValues(lambda x: x).map(lambda x: (x,1)).reduceByKey(add)
-
-threeGramCounts = threeGramRdd.flatMapValues(lambda x: x).map(lambda x: (x,1)).reduceByKey(add)
-
-
-fourGramCounts = fourGramRdd.flatMapValues(lambda x: x).map(lambda x: (x,1)).reduceByKey(add)
-
-
-segments = rdd1.zipWithIndex().map(lambda x: (x[1],x[0][1].splitlines())).map(lambda x: (x[0],[re.findall(r'\w+:?(?=:)',word) for word in x[1]])).flatMapValues(lambda x: x).map(lambda x: (x[0],x[1][0])).map(lambda x: (x,1)).reduceByKey(add)
-
-
-
-
-
-labelRdd = labels.zipWithIndex().map(lambda x: (x[1],x[0]))
-
-labelFrame = labelRdd.toDF(["did","label"])
-
-
-allFeatures = sc.union([oneGramCounts,twoGramCounts,threeGramCounts,fourGramCounts,segments])
-
-
-allFeatures = allFeatures.reduceByKey(add).map(lambda x: (x[0][1],(x[0][0],x[1])))
-
-
-vocab = allFeatures.map(lambda x: (x[0],1)).reduceByKey(add).map(lambda x: x[0]).zipWithIndex()
-
-
-allFeaturesJoined = allFeatures.join(vocab).map(lambda x: (x[1][0][0],x[1][1],x[1][0][1]))
-
-
-allFeatureMat = allFeaturesJoined.map(lambda x: MatrixEntry(x[0],x[1],x[2]))
-mat = CoordinateMatrix(allFeatureMat).toIndexedRowMatrix().rows.toDF(["did","features"])
-
-
-
-fin = mat.join(labelFrame,['did'])
-
-fin.write.parquet("gs://elinor-p2/train_features")
