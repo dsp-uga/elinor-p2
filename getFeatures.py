@@ -39,7 +39,8 @@ def train(opcodes,labels,hashFiles,sc,sqlc,path):
         templist=[]
         for line in x:
             l= re.findall(r'\w+:?(?=:)',line)
-            templist.append(l[0])
+            if l:
+                templist.append(l[0])
         return templist
 
     segments = rdd1.zipWithIndex().map(lambda x: (x[1],x[0][1].splitlines())).map(lambda x: (x[0],getSegment(x[1]))).toDF(["docId","segments"])
@@ -48,15 +49,15 @@ def train(opcodes,labels,hashFiles,sc,sqlc,path):
 
     featuresDF = featureFrame.rdd.map(lambda x: Row(did=x['docId'],docFeatures=x['opcodes']+x['2grams']+x['3grams']+x['4grams']+x['segments'])).toDF()
 
-    cv = CountVectorizer(inputCol="docFeatures", outputCol="features")
+    cv = CountVectorizer(inputCol="docFeatures", outputCol="features",vocabSize=5000)
 
     featureFitModel = cv.fit(featuresDF)
 
     featuresCV = featureFitModel.transform(featuresDF)
 
-    #labelRdd = labels.zipWithIndex().map(lambda x: (x[1],x[0]))
+    labelRdd = labels.zipWithIndex().map(lambda x: (x[1],x[0]))
 
-    #labelFrame = labelRdd.toDF(["did","label"])
+    labelFrame = labelRdd.toDF(["did","label"])
 
     trainData = featuresCV.join(labelFrame,"did").drop('did','docFeatures')
     saveData(trainData,path)
@@ -92,7 +93,8 @@ def test(opcodes,hashFiles,sc,sqlc,path,featureFitModel):
         templist=[]
         for line in x:
             l= re.findall(r'\w+:?(?=:)',line)
-            templist.append(l[0])
+            if l:
+                templist.append(l[0])
         return templist
 
     segments = rdd1.zipWithIndex().map(lambda x: (x[1],x[0][1].splitlines())).map(lambda x: (x[0],getSegment(x[1]))).toDF(["docId","segments"])
@@ -101,30 +103,26 @@ def test(opcodes,hashFiles,sc,sqlc,path,featureFitModel):
 
     featuresDF = featureFrame.rdd.map(lambda x: Row(did=x['docId'],docFeatures=x['opcodes']+x['2grams']+x['3grams']+x['4grams']+x['segments'])).toDF()
 
-    cv = CountVectorizer(inputCol="docFeatures", outputCol="features")
-
     featuresCV = featureFitModel.transform(featuresDF)
 
     testData = featuresCV.drop('did','docFeatures')
     saveData(testData,path)
 
 
-OpcodesList = sc.textFile("gs://elinor-p2/allOpcodes.txt")
+OpcodesList = sc.textFile("gs://dspp1/allOpcodes.txt")
 
 opcodeSet = set(OpcodesList.collect())
 
 opcodes= sc.broadcast(opcodeSet)
 
 #train data
+
 hashFiles = sc.textFile("gs://uga-dsp/project2/files/X_train.txt")
 labels = sc.textFile("gs://uga-dsp/project2/files/y_train.txt")
 hashFiles2 = sc.textFile("gs://uga-dsp/project2/files/X_test.txt")
 
-featureFitModel = train(opcodes,labels,hashFiles,sc,sqlc,"gs://elinor-p2/large_train_features")
+featureFitModel = train(opcodes,labels,hashFiles,sc,sqlc,"gs://dspp1/final_large_train_features")
 
 #test Data
 
-
-test(opcodes,hashFiles2,sc,sqlc,"gs://elinor-p2/large_test_features",featureFitModel)
-
-
+test(opcodes,hashFiles2,sc,sqlc,"gs://dspp1/final_large_test_features",featureFitModel)
