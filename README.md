@@ -1,7 +1,11 @@
 # elinor-p2
-Spam filtering assignment for project 2 in data practicum.
+Given several `.bytes` and `.asm` files for several  the current project aims to classify documents from 1 of 9 groups. Each document can only have one class. To this end, we conducted research and derived inspiration from Kaggle competition winners that this project is based on. In their presentation, they note several features to be advantages to them:
+  - Unigram through 4grams for `bytes` files.
+  - Unigram through 4grams for `opcodes` in `asm` files. (`opcodes` are translations of bytes files that correspond to specific operation
+  - Denoted segments in `asm` files such as the `HEADER`
 
-Here's a command to run the SMTrainer with the "vsmall" document data
-from p1 and using unsophisticated conversion (i.e. - 200 iterations, no more and no less...)
+We trained our features on the `pyspark` `ml.classifaction.RandomForestClassifier` starting the default settings of the classifier, and then tweaking to try upto 30 trees with max depth of 8.
 
-`python SMTrainer.py -i data/Reuters/X_train_vsmall.txt -l data/Reuters/y_train_vsmall.txt -o some -t data/Reuters/X_test_vsmall.txt data/Reuters/y_test_vsmall.txt -d`
+Due to memory issues we were not able to use all the features initially. Thus we limited ourselves to subsets of these features and tried various combinations of subsets. 
+
+Inspite of this work-around and also tweaking the classifiers in multiple ways we were not able to exceed 27.6% accuracy on the final test set.
