@@ -38,3 +38,13 @@ Inspite of this work-around and also tweaking the classifiers in multiple ways w
 
 1. We generate features based on the code found in the `getFeatures.py` file. This File extracts opcodes and segments from asm file. The `getBytes.py` generates one gram and two grams from the bytes file. They can be saved as parquet files to be read in later.
 2. We used the generated features to train naive bayes and random forest classifiers. Examples can be seen in `naive3.py` and `randomForest.py`.
+
+## Stuff We Tried:
+* Random Forest on unigram through four gram opcodes with segments
+* Random Forest on unigram and two gram opcode and segments
+* Random Forest on unigram opcodes
+* Random Forest on unigram and bigram byte codes
+* Random Forest on unigram byte codes
+* Naive Bayes on opcodes
+* Naive Bayes on unigram byte codes
+
