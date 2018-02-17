@@ -12,7 +12,7 @@ Classifier : Naive - Bayes
 * Apache Spark
   ** Packages: spark.ml, spark.sql
 * pySpark
-* Python 3.5
+* Python 3.6+
 
 ## Overview:
 This repository contains implementaion of various `spark.ml` based pre-processing models and classifiers built using Apache Spark to classify files into malware groups. This is done as a project for the course CSCI 8360: Data Science Practicum.
