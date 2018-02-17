@@ -28,8 +28,13 @@ Given several `.bytes` and `.asm` files for several  the current project aims to
   - Unigram through 4grams for `opcodes` in `asm` files. (`opcodes` are translations of bytes files that correspond to specific operation
   - Denoted segments in `asm` files such as the `HEADER`
 
-We trained our features on the `pyspark` `ml.classifaction.RandomForestClassifier` starting the default settings of the classifier, and then tweaking to try upto 30 trees with max depth of 8.
+We trained our features on the `pyspark` `ml.classifaction.RandomForestClassifier` starting the default settings of the classifier, and then tweaking to try upto 30 trees with max depth of 8. We also trained a `ml.classification.NaiveBayesClassifier` but were not successful in improving the results with this approach either
 
 Due to memory issues we were not able to use all the features initially. Thus we limited ourselves to subsets of these features and tried various combinations of subsets. 
 
 Inspite of this work-around and also tweaking the classifiers in multiple ways we were not able to exceed 27.6% accuracy on the final test set.
+
+##Executions:
+
+1. We generate features based on the code found in the `getFeatures.py` file. They can be saved as parquet files to be read in later.
+2. We used the generated features to train naive bayes and random forest classifiers. Examples can be seen in `naive3.py`
