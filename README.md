@@ -34,7 +34,7 @@ Due to memory issues we were not able to use all the features initially. Thus we
 
 Inspite of this work-around and also tweaking the classifiers in multiple ways we were not able to exceed 27.6% accuracy on the final test set.
 
-##Executions:
+## Executions:
 
-1. We generate features based on the code found in the `getFeatures.py` file. They can be saved as parquet files to be read in later.
-2. We used the generated features to train naive bayes and random forest classifiers. Examples can be seen in `naive3.py`
+1. We generate features based on the code found in the `getFeatures.py` file. This File extracts opcodes and segments from asm file. The `getBytes.py` generates one gram and two grams from the bytes file. They can be saved as parquet files to be read in later.
+2. We used the generated features to train naive bayes and random forest classifiers. Examples can be seen in `naive3.py` and `randomForest.py`.
